@@ -18,6 +18,17 @@ STOP_WORDS = {
     "is", "it", "me", "of", "on", "please", "the", "to", "what", "with",
     "you", "docker", "command", "commands", "use", "using",
 }
+INTENT_PHRASES = (
+    (("create", "repository"), ("git init",)),
+    (("initialize", "repository"), ("git init",)),
+    (("clone", "repository"), ("git clone",)),
+    (("build", "compose"), ("docker compose build", "docker compose up --build")),
+    (("compose", "yaml"), ("docker compose build", "docker compose up --build")),
+    (("deploy", "compose"), ("docker compose up --build", "docker compose up -d")),
+    (("remove", "unused", "volume"), ("docker volume prune",)),
+    (("list", "running", "container"), ("docker ps",)),
+    (("view", "container", "logs"), ("docker logs",)),
+)
 
 
 def load_documents() -> dict[str, str]:
@@ -71,6 +82,13 @@ def search_documents(question: str, limit: int = 1) -> list[dict[str, Any]]:
             word for word in re.findall(r"[a-z0-9]+", question.lower())
             if word in {"docker", "kubernetes", "git"}
         }
+    question_words = set(re.findall(r"[a-z0-9]+", question.lower()))
+    expected_commands = {
+        command
+        for phrase, commands in INTENT_PHRASES
+        if set(phrase).issubset(question_words)
+        for command in commands
+    }
     matches = []
     for source, document in load_documents().items():
         for title, chunk in _document_chunks(document):
@@ -79,6 +97,7 @@ def search_documents(question: str, limit: int = 1) -> list[dict[str, Any]]:
             title_words = set(re.findall(r"[a-z0-9]+", title.lower()))
             overlap = keywords & chunk_word_set
             score = sum(4 if word in title_words else 1 for word in overlap)
+            score += sum(12 for command in expected_commands if command in chunk.lower())
             source_topic = os.path.splitext(os.path.basename(source))[0].lower()
             if len(keywords) == 1 and source_topic in keywords:
                 score += 3
@@ -89,24 +108,60 @@ def search_documents(question: str, limit: int = 1) -> list[dict[str, Any]]:
                     "text": chunk,
                     "score": score,
                 })
-    return sorted(
+    ranked = sorted(
         matches,
         key=lambda match: (match["score"], len(match["text"])),
         reverse=True,
-    )[:limit]
+    )
+    if expected_commands:
+        selected = []
+        selected_keys = set()
+        for command in expected_commands:
+            for match in ranked:
+                key = (match["source"], match["text"])
+                if command in match["text"].lower() and key not in selected_keys:
+                    selected.append(match)
+                    selected_keys.add(key)
+                    break
+        ranked = selected + [
+            match for match in ranked
+            if (match["source"], match["text"]) not in selected_keys
+        ]
+        limit = max(limit, len(selected))
+    return ranked[:limit]
+
+
+def _question_parts(question: str) -> list[str]:
+    """Split a question containing multiple independent requests."""
+    parts = re.split(
+        r"\?|;|\s+\band\b\s+(?=(?:how|what|where|which|can|is|to|build|deploy|"
+        r"create|clone|run|start|stop|remove|check)\b)",
+        question,
+        flags=re.IGNORECASE,
+    )
+    return [part.strip() for part in parts if part.strip()]
 
 
 def create_answer(question: str) -> str:
-    """Build a cited answer from the highest-scoring document sections."""
-    matches = search_documents(question)
+    """Build focused, cited answers for one or more requests."""
+    matches = []
+    seen = set()
+    for part in _question_parts(question):
+        for match in search_documents(part):
+            key = (match["source"], match["text"])
+            if key not in seen:
+                matches.append((part, match))
+                seen.add(key)
     if not matches:
         return (
             "I could not find an answer in the project documentation. "
             "Try asking about Docker, Kubernetes, CI/CD, health checks, or type help."
         )
 
-    match = matches[0]
-    return f"{match['text']}\n\nSource: {match['source']}"
+    answers = []
+    for part, match in matches:
+        answers.append(f"{match['text']}\n")
+    return "\n\n---\n\n".join(answers)
 
 
 class ChatbotHandler(BaseHTTPRequestHandler):

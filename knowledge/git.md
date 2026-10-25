@@ -21,7 +21,7 @@ git config --global user.email "you@example.com"
 git config --list
 ```
 
-# Repositories
+# Create a Git repository
 
 Create a repository in the current directory:
 
@@ -29,12 +29,16 @@ Create a repository in the current directory:
 git init
 ```
 
+# Clone an existing repository
+
 Copy an existing remote repository:
 
 ```bash
 git clone <repository-url>
 cd <repository-directory>
 ```
+
+# Manage remote repositories
 
 Show the remote URLs:
 
