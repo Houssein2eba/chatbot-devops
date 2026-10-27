@@ -1,0 +1,21 @@
+services:
+  solr:
+    image: solr:9
+    container_name: chatbot-solr
+    ports:
+      - "8983:8983"
+    command:
+      - solr-precreate
+      - devops
+
+  chatbot:
+    build: .
+    container_name: chatbot-devops
+    ports:
+      - "8000:8000"
+    environment:
+      SOLR_URL: http://solr:8983/solr/devops
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
+    depends_on:
+      - solr

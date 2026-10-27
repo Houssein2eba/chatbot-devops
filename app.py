@@ -4,6 +4,8 @@ import json
 import os
 import re
 import time
+import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 from typing import Any
@@ -13,6 +15,9 @@ HOST = "0.0.0.0"
 PORT = int(os.getenv("PORT", "8000"))
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 KNOWLEDGE_DIR = os.path.join(BASE_DIR, "knowledge")
+SOLR_URL = os.getenv("SOLR_URL", "").rstrip("/")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 STOP_WORDS = {
     "a", "an", "and", "are", "can", "do", "for", "from", "how", "i", "in",
     "is", "it", "me", "of", "on", "please", "the", "to", "what", "with",
@@ -71,8 +76,48 @@ def _document_chunks(document: str) -> list[tuple[str, str]]:
     return chunks
 
 
+def _solr_search(question: str, limit: int = 1) -> list[dict[str, Any]]:
+    """Query an external Solr collection when configured."""
+    if not SOLR_URL:
+        return []
+
+    params = {
+        "q": question,
+        "defType": "edismax",
+        "qf": "title^4 content",
+        "rows": max(limit, 1),
+        "wt": "json",
+        "hl": "true",
+        "hl.fl": "content",
+    }
+    url = f"{SOLR_URL}/select?{urllib.parse.urlencode(params)}"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:  # pragma: no cover - defensive for runtime envs
+        print(f"Solr query failed for '{question}': {exc}", flush=True)
+        return []
+
+    matches = []
+    for doc in payload.get("response", {}).get("docs", []):
+        text = doc.get("content") or doc.get("text") or ""
+        if not text:
+            continue
+        matches.append({
+            "source": doc.get("source", "solr-index"),
+            "title": doc.get("title", "Relevant section"),
+            "text": text,
+            "score": float(doc.get("score", 0.0) or 0.0),
+        })
+    return matches
+
+
 def search_documents(question: str, limit: int = 1) -> list[dict[str, Any]]:
-    """Retrieve the most relevant small document chunks using keyword matching."""
+    """Retrieve the most relevant small document chunks using Solr when available."""
+    solr_matches = _solr_search(question, limit)
+    if solr_matches:
+        return solr_matches
+
     keywords = {
         word for word in re.findall(r"[a-z0-9]+", question.lower())
         if word not in STOP_WORDS and len(word) > 2
@@ -142,6 +187,47 @@ def _question_parts(question: str) -> list[str]:
     return [part.strip() for part in parts if part.strip()]
 
 
+def _groq_answer(question: str, matches: list[dict[str, Any]]) -> str | None:
+    """Generate a final answer with Groq when configured and the API key is available."""
+    if not GROQ_API_KEY:
+        return None
+
+    context = "\n\n---\n\n".join(
+        f"Source: {match['source']}\nTitle: {match['title']}\n\n{match['text']}"
+        for match in matches
+    )
+    prompt = (
+        "Answer the user's question using only the supplied documentation context. "
+        "If the answer is not present, say so clearly. Keep the answer concise but useful, "
+        "and cite the relevant source file names when you reference the documentation.\n\n"
+        f"Question:\n{question}\n\nDocumentation context:\n{context}"
+    )
+
+    try:
+        from openai import OpenAI
+    except ImportError:
+        print("Groq integration requires the 'openai' package. Install it with: pip install openai", flush=True)
+        return None
+
+    try:
+        client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+        response = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": "You are a helpful DevOps documentation assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=500,
+        )
+    except Exception as exc:  # pragma: no cover - network and credentials can fail at runtime
+        print(f"Groq answer generation failed: {exc}", flush=True)
+        return None
+
+    answer = response.choices[0].message.content.strip()
+    return answer or None
+
+
 def create_answer(question: str) -> str:
     """Build focused, cited answers for one or more requests."""
     matches = []
@@ -158,9 +244,13 @@ def create_answer(question: str) -> str:
             "Try asking about Docker, Kubernetes, CI/CD, health checks, or type help."
         )
 
+    groq_answer = _groq_answer(question, [match for _, match in matches])
+    if groq_answer:
+        return groq_answer
+
     answers = []
     for part, match in matches:
-        answers.append(f"{match['text']}\n")
+        answers.append(f"{match['source']}:\n{match['text']}\n")
     return "\n\n---\n\n".join(answers)
 
 
