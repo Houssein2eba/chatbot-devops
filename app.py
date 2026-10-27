@@ -27,6 +27,8 @@ INTENT_PHRASES = (
     (("create", "repository"), ("git init",)),
     (("initialize", "repository"), ("git init",)),
     (("clone", "repository"), ("git clone",)),
+    (("run", "container", "background"), ("docker run -d",)),
+    (("run", "container", "detached"), ("docker run -d",)),
     (("build", "compose"), ("docker compose build", "docker compose up --build")),
     (("compose", "yaml"), ("docker compose build", "docker compose up --build")),
     (("deploy", "compose"), ("docker compose up --build", "docker compose up -d")),
@@ -76,6 +78,16 @@ def _document_chunks(document: str) -> list[tuple[str, str]]:
     return chunks
 
 
+def _expected_commands(question: str) -> set[str]:
+    question_words = set(re.findall(r"[a-z0-9]+", question.lower()))
+    return {
+        command
+        for phrase, commands in INTENT_PHRASES
+        if set(phrase).issubset(question_words)
+        for command in commands
+    }
+
+
 def _solr_search(question: str, limit: int = 1) -> list[dict[str, Any]]:
     """Query an external Solr collection when configured."""
     if not SOLR_URL:
@@ -85,7 +97,7 @@ def _solr_search(question: str, limit: int = 1) -> list[dict[str, Any]]:
         "q": question,
         "defType": "edismax",
         "qf": "title^4 content",
-        "rows": max(limit, 1),
+        "rows": max(limit, 3),
         "wt": "json",
         "hl": "true",
         "hl.fl": "content",
@@ -109,7 +121,24 @@ def _solr_search(question: str, limit: int = 1) -> list[dict[str, Any]]:
             "text": text,
             "score": float(doc.get("score", 0.0) or 0.0),
         })
-    return matches
+    expected_commands = _expected_commands(question)
+    if expected_commands:
+        prioritized = [
+            match
+            for command in expected_commands
+            for match in matches
+            if command in match["text"].lower()
+        ]
+        if prioritized:
+            prioritized_keys = {
+                (match["source"], match["text"]) for match in prioritized
+            }
+            matches = prioritized + [
+                match
+                for match in matches
+                if (match["source"], match["text"]) not in prioritized_keys
+            ]
+    return matches[:limit]
 
 
 def search_documents(question: str, limit: int = 1) -> list[dict[str, Any]]:
@@ -127,13 +156,7 @@ def search_documents(question: str, limit: int = 1) -> list[dict[str, Any]]:
             word for word in re.findall(r"[a-z0-9]+", question.lower())
             if word in {"docker", "kubernetes", "git"}
         }
-    question_words = set(re.findall(r"[a-z0-9]+", question.lower()))
-    expected_commands = {
-        command
-        for phrase, commands in INTENT_PHRASES
-        if set(phrase).issubset(question_words)
-        for command in commands
-    }
+    expected_commands = _expected_commands(question)
     matches = []
     for source, document in load_documents().items():
         for title, chunk in _document_chunks(document):

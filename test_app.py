@@ -62,6 +62,16 @@ class ChatbotHandlerTests(unittest.TestCase):
         self.assertIn("docker volume prune", payload["answer"])
         self.assertNotIn("docker image ls", payload["answer"])
 
+    def test_background_container_question_returns_detached_run(self):
+        status, payload = self.request(
+            "POST",
+            "/chat",
+            {"question": "How do I run a container in the background?"},
+        )
+        self.assertEqual(status, 200)
+        self.assertIn("docker run -d", payload["answer"])
+        self.assertNotIn("docker start <container-name>", payload["answer"])
+
     def test_create_repository_question_returns_git_init(self):
         status, payload = self.request(
             "POST", "/chat", {"question": "How to create a git repository?"}
