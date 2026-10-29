@@ -1,0 +1,48 @@
+# Hosts use the real domain shugeinfo.xyz, so they're STABLE across cluster
+# recreates. On recreate you only repoint the DNS A records to the new ingress
+# controller IP (see k8s/INGRESS-SETUP.md) — no edits here needed.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rag-ingress
+  namespace: rag-chatbot
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # Allow document uploads up to 50 MB (default nginx limit is 1 MB).
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    # Don't buffer responses, so /v1/chat/stream SSE works through the API host.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # cert-manager auto-issues a trusted Let's Encrypt cert into 'rag-tls' and
+    # renews it. Use 'letsencrypt-staging' while testing. Requires cert-manager
+    # + the ClusterIssuer (k8s/setup/cert-manager-issuers.yaml).
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - rag.shugeinfo.xyz
+        - api.shugeinfo.xyz
+      secretName: rag-tls
+  rules:
+    # UI (Streamlit)
+    - host: rag.shugeinfo.xyz
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: rag-ui
+                port:
+                  number: 80
+    # API (FastAPI) — upload / ingest / chat over HTTPS
+    - host: api.shugeinfo.xyz
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: rag-api
+                port:
+                  number: 8000
