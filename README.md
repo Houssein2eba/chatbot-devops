@@ -165,12 +165,6 @@ kind delete cluster --name docubot
   after review by the other team member
 - Commit messages: `feat:`, `fix:`, `docs:`
 
-## Team
-
-| Name | Responsibilities |
-|---|---|
-| [Name 1] | [e.g. API, ingestion, Docker, Compose, CI/CD] |
-| [Name 2] | [e.g. Kubernetes, Terraform, UI, documentation] |
 
 ## Limitations and What We Learned
 [Be honest: what doesn't work well, what was hard, what you solved.]
